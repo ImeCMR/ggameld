@@ -1,0 +1,55 @@
+*.py[cod]
+
+# C extensions
+*.so
+
+# Packages
+docs/_build
+docs/reference/_autosummary
+*.egg
+*.egg-info
+dist
+build
+eggs
+parts
+bin
+var
+sdist
+develop-eggs
+.installed.cfg
+lib
+lib64
+plugin/build*
+
+# Installer logs
+pip-log.txt
+
+# Unit test / coverage reports
+.coverage
+.tox
+nosetests.xml
+
+# Translations
+*.mo
+
+# Mr Developer
+.mr.developer.cfg
+.project
+.pydevproject
+
+# vim swapfiles
+.*.swp
+
+# python testing file
+reg_settings.py
+
+.ropeproject
+
+# ignore version string
+meld/version.py
+
+
+.idea
+.vscode/settings.json
+.mypy_cache
+monkeytype.sqlite3
