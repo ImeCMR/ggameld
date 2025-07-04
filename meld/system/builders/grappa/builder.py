@@ -99,12 +99,6 @@ class GrappaSystemBuilder:
 
         system = base_ff.createSystem(**create_system_kwargs)
 
-        #=======================================================
-        print("nonbonded_method:", nonbonded_method)
-        if self.options.cutoff is not None:
-            print("nonbonded_cutoff:", nonbonded_cutoff, type(nonbonded_cutoff))
-        #=====================================================
-
         # Initialize Grappa force field
         logger.info(f"Initializing Grappa with model tag: {self.options.grappa_model_tag}")
         try:
@@ -121,45 +115,33 @@ class GrappaSystemBuilder:
             logger.info("System parametrized successfully by Grappa.")
         except Exception as e:
             logger.error(f"Grappa parametrization failed: {e}")
-            # It might be useful to log more details about the system and topology if possible
             raise RuntimeError("Grappa parametrization step failed.") from e
 
 
         # Create integrator
-        integrator = _create_integrator(
-            self.options.default_temperature,
-            self.options.use_big_timestep,
-            self.options.use_bigger_timestep,
-        )
-        logger.info(f"Integrator created with temperature {self.options.default_temperature}K.")
+        integrator = self._create_integrator()
+        logger.info(f"Integrator created. Type: {type(integrator)}")
+
 
         # Prepare coordinates and velocities
         coords_nm = np.array([list(pos.value_in_unit(u.nanometer)) for pos in positions])
         vels_nm_ps = np.zeros_like(coords_nm) * (u.nanometer / u.picosecond)
 
-        #============== debugging lines ======================================
         num_particles = system.getNumParticles()
-        print("Num particles in system:", num_particles)
-        print("Num coordinates:", coords_nm.shape[0])
-        print("Any NaNs in coords?", np.isnan(coords_nm).any())
         if num_particles != coords_nm.shape[0]:
             raise ValueError(f"Atom count mismatch; system has {num_particles} particles, but coordinates have {coords_nm.shape[0]}")
         if np.isnan(coords_nm).any():
-            nan_rows = np.where(np.isnan(coords_nm).anys(axis=1))[0]
+            nan_rows = np.where(np.isnan(coords_nm).any(axis=1))[0]
             raise ValueError(f"NaN detected in coordinates at rows: {nan_rows}")
         
-        # Optionally, check velocities as well
         if np.isnan(vels_nm_ps).any():
             raise ValueError("NaN detected in velocities!")
-        #=====================================================================
 
         # Handle box vectors
         box_nm = None
         if box_vectors is not None:
             box_nm = box_vectors.value_in_unit(u.nanometer)
-            # Assuming orthorhombic box for simplicity, matching AmberSystemBuilder
-            if isinstance(box_nm, np.ndarray) and box_nm.shape == (3,3): # it is a matrix
-                 # check its diagonal
+            if isinstance(box_nm, np.ndarray) and box_nm.shape == (3,3):
                  if not (box_nm[0,1] == 0 and box_nm[0,2] == 0 and \
                          box_nm[1,0] == 0 and box_nm[1,2] == 0 and \
                          box_nm[2,0] == 0 and box_nm[2,1] == 0 ):
@@ -173,7 +155,7 @@ class GrappaSystemBuilder:
             system=system,
             topology=topology,
             integrator=integrator,
-            barostat=None,  # Grappa examples do not typically include a barostat by default
+            barostat=None,
             coordinates=coords_nm,
             velocities=vels_nm_ps,
             box_vectors=box_nm,
@@ -184,12 +166,63 @@ class GrappaSystemBuilder:
             },
         )
 
+    def _create_integrator(self):
+        """Helper method to create the correct integrator based on options."""
+        if self.options.use_big_timestep:
+            timestep = 3.0 * u.femtoseconds
+            logger.info(f"Using timestep: {timestep}")
+        elif self.options.use_bigger_timestep:
+            timestep = 4.0 * u.femtoseconds
+            logger.info(f"Using timestep: {timestep}")
+        else:
+            timestep = 2.0 * u.femtoseconds
+            logger.info(f"Using timestep: {timestep}")
+
+        temperature_k = self.options.default_temperature * u.kelvin
+
+        if self.options.enable_gamd:
+            logger.info("Creating GamdStageIntegrator.")
+            boost_type_map = {
+                "upper-total": mm.GamdStageIntegrator.UPPER_TOTAL,
+                "lower-total": mm.GamdStageIntegrator.LOWER_TOTAL,
+                "upper-dihedral": mm.GamdStageIntegrator.UPPER_DIHEDRAL,
+                "lower-dihedral": mm.GamdStageIntegrator.LOWER_DIHEDRAL,
+                "upper-dual": mm.GamdStageIntegrator.UPPER_DUAL,
+                "lower-dual": mm.GamdStageIntegrator.LOWER_DUAL,
+            }
+            boost_type = boost_type_map.get(self.options.boost_type_str)
+            if boost_type is None:
+                raise ValueError(f"Invalid GaMD boost type string: {self.options.boost_type_str}")
+
+            integrator = mm.GamdStageIntegrator(
+                dt=timestep,
+                ntcmdprep=self.options.conventional_md_prep,
+                ntcmd=self.options.conventional_md,
+                ntebprep=self.options.gamd_equilibration_prep,
+                nteb=self.options.gamd_equilibration,
+                nstlim=self.options.total_simulation_length,
+                ntave=self.options.averaging_window_interval,
+                sigma0P=self.options.sigma0p * u.kilojoule_per_mole,
+                sigma0D=self.options.sigma0d * u.kilojoule_per_mole,
+                boostOption=boost_type,
+                group=0
+            )
+            logger.info(f"GamdStageIntegrator configured with boost type '{self.options.boost_type_str}', "
+                        f"sigma0P={self.options.sigma0p} kJ/mol, sigma0D={self.options.sigma0d} kJ/mol.")
+            logger.warning("GamdStageIntegrator's internal Langevin dynamics temperature and friction are typically fixed (e.g. 300K, 1/ps). "
+                           "Ensure MELD's temperature scaling and system temperature settings are compatible.")
+        else:
+            logger.info(f"Creating LangevinIntegrator with T={temperature_k}, friction={self.options.gamd_friction_coefficient / u.picosecond}, timestep={timestep}.")
+            friction = self.options.gamd_friction_coefficient / u.picosecond
+            integrator = mm.LangevinIntegrator(temperature_k, friction, timestep)
+
+        return integrator
 
 def _get_hydrogen_mass_and_constraints(use_big_timestep: bool, use_bigger_timestep: bool):
     if use_big_timestep:
         logger.info("Enabling hydrogen mass=3 Da, constraining all bonds.")
         constraint_type = app.AllBonds
-        hydrogen_mass = 3.0 * u.dalton # OpenMM uses daltons for hydrogenMass
+        hydrogen_mass = 3.0 * u.dalton
     elif use_bigger_timestep:
         logger.info("Enabling hydrogen mass=4 Da, constraining all bonds.")
         constraint_type = app.AllBonds
@@ -197,22 +230,5 @@ def _get_hydrogen_mass_and_constraints(use_big_timestep: bool, use_bigger_timest
     else:
         logger.info("Using default hydrogen mass, constraining bonds with hydrogen.")
         constraint_type = app.HBonds
-        hydrogen_mass = None # Defaults to actual hydrogen mass
+        hydrogen_mass = None
     return hydrogen_mass, constraint_type
-
-
-def _create_integrator(temperature: float, use_big_timestep: bool, use_bigger_timestep: bool):
-    if use_big_timestep:
-        logger.info("Creating Langevin integrator with 3.0 fs timestep.")
-        timestep = 3.0 * u.femtoseconds
-    elif use_bigger_timestep:
-        logger.info("Creating Langevin integrator with 4.0 fs timestep.") # Adjusted from Amber's 4.5fs
-        timestep = 4.0 * u.femtoseconds
-    else:
-        logger.info("Creating Langevin integrator with 2.0 fs timestep.")
-        timestep = 2.0 * u.femtoseconds
-    
-    # Standard friction coefficient
-    friction = 1.0 / u.picosecond
-    # Temperature is already in Kelvin from GrappaOptions
-    return mm.LangevinIntegrator(temperature * u.kelvin, friction, timestep)

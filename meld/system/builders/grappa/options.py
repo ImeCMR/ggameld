@@ -28,6 +28,22 @@ class GrappaOptions:
     use_bigger_timestep: bool = False
     remove_com: bool = True
 
+    # GaMD options
+    enable_gamd: bool = False
+    boost_type_str: str = "upper-total"  # "lower-total", "upper-dihedral", "lower-dihedral", "upper-dual", "lower-dual"
+    # The following will be set in total simulation steps by the setup script, not time
+    conventional_md_prep: int = 0
+    conventional_md: int = 0
+    gamd_equilibration_prep: int = 0
+    gamd_equilibration: int = 0
+    total_simulation_length: int = 0 # Total steps for the whole GaMD simulation
+    averaging_window_interval: int = 0 # Steps per averaging window, for GaMD stats
+    sigma0p: float = 6.0  # kJ/mol
+    sigma0d: float = 6.0  # kJ/mol
+    gamd_random_seed: int = 0 # Seed for GaMD integrator's random number generator
+    gamd_friction_coefficient: float = 1.0 # /picosecond, for the Langevin dynamics within GaMD stages
+
+
     def __post_init__(self):
         # Unit conversions must happen before validation if validation depends on the converted value type
         if isinstance(self.default_temperature, u.Quantity):
@@ -97,3 +113,43 @@ class GrappaOptions:
         logger.info(f"Use big timestep (3fs): {self.use_big_timestep}")
         logger.info(f"Use bigger timestep (4fs): {self.use_bigger_timestep}")
         logger.info(f"Remove COM motion: {self.remove_com}")
+
+        # GaMD Validations and Logging
+        if self.enable_gamd:
+            logger.info("GaMD enabled.")
+            ALLOWED_BOOST_TYPES = ["upper-total", "lower-total", "upper-dihedral", "lower-dihedral", "upper-dual", "lower-dual"]
+            if self.boost_type_str not in ALLOWED_BOOST_TYPES:
+                raise ValueError(f"Invalid boost_type_str: '{self.boost_type_str}'. Allowed types are: {ALLOWED_BOOST_TYPES}")
+            logger.info(f"GaMD boost type: {self.boost_type_str}")
+
+            if self.conventional_md_prep < 0 or \
+               self.conventional_md < 0 or \
+               self.gamd_equilibration_prep < 0 or \
+               self.gamd_equilibration < 0 or \
+               self.total_simulation_length <= 0 or \
+               self.averaging_window_interval <= 0:
+                raise ValueError("GaMD stage lengths and total simulation length/averaging interval must be positive.")
+
+            # Check that sum of parts doesn't exceed total_simulation_length (or rather, it will be controlled by it)
+            # total_simulation_length is the overarching controller.
+            # The individual stages define how GamdStageIntegrator behaves.
+
+            logger.info(f"GaMD conventional_md_prep steps: {self.conventional_md_prep}")
+            logger.info(f"GaMD conventional_md steps: {self.conventional_md}")
+            logger.info(f"GaMD gamd_equilibration_prep steps: {self.gamd_equilibration_prep}")
+            logger.info(f"GaMD gamd_equilibration steps: {self.gamd_equilibration}")
+            logger.info(f"GaMD total_simulation_length steps: {self.total_simulation_length}")
+            logger.info(f"GaMD averaging_window_interval steps: {self.averaging_window_interval}")
+
+            if self.sigma0p < 0:
+                raise ValueError("sigma0p must be >= 0")
+            logger.info(f"GaMD sigma0p: {self.sigma0p} kJ/mol")
+            if self.sigma0d < 0:
+                raise ValueError("sigma0d must be >= 0")
+            logger.info(f"GaMD sigma0d: {self.sigma0d} kJ/mol")
+            logger.info(f"GaMD random_seed: {self.gamd_random_seed}")
+            if self.gamd_friction_coefficient < 0:
+                raise ValueError("gamd_friction_coefficient must be >= 0")
+            logger.info(f"GaMD friction coefficient: {self.gamd_friction_coefficient} /ps")
+        else:
+            logger.info("GaMD disabled.")
